@@ -1,0 +1,241 @@
+--@name Tow_Howitzer
+--@author Markiz
+--@shared
+
+-- ============================================================
+-- CONFIG
+-- ============================================================
+local ObjUrl     = "https://raw.githubusercontent.com/Chivick-oficial/GMOD/main/tow2.obj"
+local Scale      = 60.0
+
+--   (  )
+local MeshPitch  = 0
+local MeshYaw    = 0
+local MeshRoll   = 0
+
+--   ( 2)
+local RecoilDist  = 30    --    
+local RecoilTime  = 0.10  --   ()
+local ReturnTime  = 0.50  --   ()
+
+--   ""  :   (local)
+--  -Y  -X,    OBJ
+local RecoilAxis  = Vector(0, -1, 0)
+
+--  
+local ModelColor  = Color(84, 104, 82)
+
+-- ============================================================
+if SERVER then
+-- ============================================================
+
+local holoBase, holoBarrel
+local seat
+local isFiring  = false
+local fireStart = 0
+local lastT     = timer.curtime()
+
+--   -
+holoBase = holograms.create(
+    chip():getPos(), chip():getAngles(),
+    "models/Combine_Helicopter/helicopter_bomb01.mdl", Vector(0.01)
+)
+holoBase:setColor(Color(0,0,0,0))
+
+holoBarrel = holograms.create(
+    chip():getPos(), chip():getAngles(),
+    "models/Combine_Helicopter/helicopter_bomb01.mdl", Vector(0.01)
+)
+holoBarrel:setColor(Color(0,0,0,0))
+holoBarrel:setParent(holoBase)
+holoBarrel:setLocalPos(Vector(0, 0, 0))
+holoBarrel:setLocalAngles(Angle(0, 0, 0))
+
+-- 
+seat = prop.createSeat(
+    chip():getPos() + Vector(0, 0, 80),
+    chip():getAngles() + Angle(0, 180, 0),
+    "models/nova/airboat_seat.mdl", true
+)
+if isValid(seat) then
+    seat:setNocollideAll(true)
+end
+
+--   
+local function sendRefs()
+    if not isValid(holoBase) then return end
+    net.start("gun_holos")
+    net.writeEntity(holoBase)
+    net.writeEntity(holoBarrel)
+    net.send()
+end
+timer.simple(0.5, sendRefs)
+timer.simple(2.5, sendRefs)
+timer.simple(6.0, sendRefs)
+
+--     
+net.receive("gun_fire", function(_, ply)
+    if not isValid(seat) then return end
+    if ply ~= seat:getDriver() then return end
+    if isFiring then return end   --     
+    isFiring  = true
+    fireStart = timer.curtime()
+    --     
+    net.start("gun_fire_event")
+    net.send()
+end)
+
+-- Think:     ( holoBarrel )
+hook.add("think", "gun_think", function()
+    if not isValid(holoBarrel) then return end
+
+    local now = timer.curtime()
+    lastT = now
+
+    local offset = 0
+    if isFiring then
+        local t = now - fireStart
+        local total = RecoilTime + ReturnTime
+        if t < RecoilTime then
+            -- :  
+            offset = (t / RecoilTime) * RecoilDist
+        elseif t < total then
+            -- :  
+            local frac = (t - RecoilTime) / ReturnTime
+            -- ease-out
+            offset = RecoilDist * (1 - frac * frac)
+        else
+            offset = 0
+            isFiring = false
+        end
+    end
+
+    holoBarrel:setLocalPos(RecoilAxis * offset)
+end)
+
+-- ============================================================
+elseif CLIENT then
+-- ============================================================
+
+local _hBase, _hBarrel
+local meshApplied = false
+local metalMat    = material.load("sprops/textures/sprops_metal1")
+
+--       
+net.receive("gun_holos", function()
+    _hBase   = net.readEntity()
+    _hBarrel = net.readEntity()
+    if meshApplied then return end
+
+    http.get(ObjUrl, function(objdata)
+        if not objdata or #objdata < 10 then
+            print("[Howitzer]   OBJ!")
+            return
+        end
+
+        local meshTable = {}
+        local loadmesh  = coroutine.wrap(function()
+            local ok, result = pcall(function()
+                return mesh.createFromObj(objdata, true, true)
+            end)
+            if not ok then
+                print("[Howitzer] Mesh error: " .. tostring(result))
+                return true
+            end
+            for k, v in pairs(result) do
+                meshTable[k] = v
+            end
+            return true
+        end)
+
+        hook.add("think", "gun_mesh_load", function()
+            while quotaAverage() < quotaMax() / 2 do
+                if loadmesh() then
+                    hook.remove("think", "gun_mesh_load")
+
+                    --     ( 1  base,  2  barrel)
+                    local parts = {}
+                    for k, v in pairs(meshTable) do
+                        parts[#parts + 1] = { name = k, m = v }
+                    end
+                    table.sort(parts, function(a, b) return a.name < b.name end)
+
+                    print("[Howitzer]  : " .. #parts)
+                    for i, p in ipairs(parts) do
+                        print("  [" .. i .. "] " .. p.name)
+                    end
+
+                    --  1   (holoBase)
+                    if parts[1] and isValid(_hBase) then
+                        _hBase:setMesh(parts[1].m)
+                        _hBase:setMeshMaterial(metalMat)
+                        _hBase:setRenderBounds(Vector(-500*Scale), Vector(500*Scale))
+                        _hBase:setColor(ModelColor)
+                        _hBase:setLocalAngles(Angle(MeshPitch, MeshYaw, MeshRoll))
+                        _hBase:setScale(Vector(Scale))
+                    end
+
+                    --  2   (holoBarrel, )
+                    if parts[2] and isValid(_hBarrel) then
+                        _hBarrel:setMesh(parts[2].m)
+                        _hBarrel:setMeshMaterial(metalMat)
+                        _hBarrel:setRenderBounds(Vector(-500*Scale), Vector(500*Scale))
+                        _hBarrel:setColor(ModelColor)
+                        _hBarrel:setLocalAngles(Angle(MeshPitch, MeshYaw, MeshRoll))
+                        _hBarrel:setScale(Vector(Scale))
+                    end
+
+                    meshApplied = true
+                    print("[Howitzer]  !")
+                    return
+                end
+            end
+        end)
+    end)
+end)
+
+--     
+local flashTime = -99
+net.receive("gun_fire_event", function()
+    flashTime = timer.systime()
+end)
+
+--  :  =  
+if player() == owner() then
+    local _lastRmb = false
+    hook.add("tick", "gun_input", function()
+        if not player():inVehicle() then
+            _lastRmb = false
+            return
+        end
+        local rmb = input.isMouseDown(MOUSE.RIGHT)
+        if rmb and not _lastRmb then
+            net.start("gun_fire")
+            net.send()
+        end
+        _lastRmb = rmb
+    end)
+end
+
+--  HUD 
+hook.add("DrawHUD", "gun_hud", function()
+    if not player():inVehicle() then return end
+    local sw, sh = render.getGameResolution()
+
+    -- 
+    render.setColor(Color(0, 0, 0, 140))
+    render.drawRect(0, sh - 38, 200, 38)
+    render.setFont(render.createFont("Courier New", 18, 600, true))
+    render.setColor(Color(255, 220, 80, 230))
+    render.drawSimpleText(10, sh - 28, " = ", 0, 0)
+
+    --   
+    local ft = timer.systime() - flashTime
+    if ft < 0.15 then
+        local alpha = math.floor((1 - ft / 0.15) * 160)
+        render.setColor(Color(255, 180, 40, alpha))
+        render.drawRect(0, 0, sw, sh)
+    end
+end)
+
+end -- CLIENT
